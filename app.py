@@ -5,11 +5,11 @@ import re
 import tempfile
 import os
 
-st.set_page_config(page_title="Contar - Imputación de Proveedores", layout="wide")
+st.set_page_config(page_title="Contar - Imputación de Compras", layout="wide")
 
-st.title("🧠 Contar - Imputación de Proveedores")
+st.title("🧠 Contar - Imputación desde Compras Unificadas")
 
-st.info("⚠️ Subir únicamente archivos generados por el sistema Contar - Compras")
+st.info("⚠️ Subir archivo de compras generado por el sistema Contar")
 
 # ---------------------------
 # FUNCIONES
@@ -21,34 +21,49 @@ def limpiar_cuit(valor):
     return re.sub(r"\D", "", str(valor))
 
 # ---------------------------
-# CARGA ESTRICTA DE PADRÓN
+# LEER COMPRAS DESDE EXCEL
 # ---------------------------
 
-def cargar_padron_excel(file):
-    try:
-        df = pd.read_excel(file, sheet_name="Padron_Proveedores")
-    except:
-        st.error("❌ El archivo debe tener una hoja llamada 'Padron_Proveedores'")
-        st.stop()
+def cargar_compras(file):
+    df = pd.read_excel(file)
 
-    columnas_esperadas = [
-        "CUIT",
-        "Proveedor",
-        "Importe Total",
-        "Cantidad Comprobantes"
+    columnas_necesarias = [
+        "Nro. Doc. Vendedor",
+        "Denominación del Vendedor",
+        "Importe Total"
     ]
 
-    faltantes = [c for c in columnas_esperadas if c not in df.columns]
+    faltantes = [c for c in columnas_necesarias if c not in df.columns]
 
     if faltantes:
-        st.error(f"❌ Faltan columnas obligatorias: {faltantes}")
+        st.error(f"❌ El archivo no tiene columnas necesarias: {faltantes}")
         st.stop()
 
-    st.success("✅ Formato de padrón correcto")
-
-    df["CUIT"] = df["CUIT"].apply(limpiar_cuit)
+    df["CUIT"] = df["Nro. Doc. Vendedor"].apply(limpiar_cuit)
 
     return df
+
+# ---------------------------
+# GENERAR PADRÓN
+# ---------------------------
+
+def generar_padron(df):
+    padron = (
+        df.groupby("CUIT")
+        .agg({
+            "Denominación del Vendedor": "last",
+            "Importe Total": "sum",
+            "CUIT": "count"
+        })
+        .rename(columns={
+            "Denominación del Vendedor": "Proveedor",
+            "Importe Total": "Importe Total",
+            "CUIT": "Cantidad Comprobantes"
+        })
+        .reset_index()
+    )
+
+    return padron
 
 # ---------------------------
 # PLAN DE CUENTAS PDF
@@ -81,9 +96,7 @@ def leer_plan_cuentas_pdf(file):
                 "Cuenta": match.group(2)
             })
 
-    df = pd.DataFrame(cuentas).drop_duplicates()
-
-    return df
+    return pd.DataFrame(cuentas).drop_duplicates()
 
 # ---------------------------
 # MEMORIA
@@ -137,26 +150,21 @@ def sugerir(proveedor, plan):
 
     for _, row in plan.iterrows():
         codigo = row["Codigo"]
-        cuenta = row["Cuenta"]
-        cuenta_upper = cuenta.upper()
+        cuenta = row["Cuenta"].upper()
 
         score = 0
 
         if "YPF" in nombre or "SHELL" in nombre:
-            if "COMBUST" in cuenta_upper:
+            if "COMBUST" in cuenta:
                 score += 10
 
-        if "TRANSP" in nombre or "FLETE" in nombre:
-            if "FLETE" in cuenta_upper or "TRANSP" in cuenta_upper:
+        if "TRANSP" in nombre:
+            if "FLETE" in cuenta or "TRANSP" in cuenta:
                 score += 10
 
-        if "ESTUDIO" in nombre or "CONSULT" in nombre:
-            if "HONOR" in cuenta_upper:
+        if "ESTUDIO" in nombre:
+            if "HONOR" in cuenta:
                 score += 10
-
-        if "FERRE" in nombre or "CORRALON" in nombre:
-            if "MATERIA" in cuenta_upper or "INSUMO" in cuenta_upper:
-                score += 8
 
         if score > 0:
             sugerencias.append((codigo, cuenta, score))
@@ -169,16 +177,13 @@ def sugerir(proveedor, plan):
 # INTERFAZ
 # ---------------------------
 
-st.subheader("1️⃣ Actividad de la empresa")
-actividad = st.text_area("Describir actividad")
+st.subheader("1️⃣ Subir archivo de compras")
+archivo_compras = st.file_uploader("Subir Excel de compras", type=["xlsx"])
 
-st.subheader("2️⃣ Subir Padrón de Proveedores")
-archivo_padron = st.file_uploader("Subir Excel", type=["xlsx"])
-
-st.subheader("3️⃣ Subir plan de cuentas")
+st.subheader("2️⃣ Subir plan de cuentas")
 archivo_plan = st.file_uploader("Subir PDF", type=["pdf"])
 
-st.subheader("4️⃣ Subir memoria (opcional)")
+st.subheader("3️⃣ Subir memoria (opcional)")
 archivo_memoria = st.file_uploader("Subir memoria", type=["xlsx"])
 
 # ---------------------------
@@ -187,11 +192,12 @@ archivo_memoria = st.file_uploader("Subir memoria", type=["xlsx"])
 
 if st.button("🚀 Procesar"):
 
-    if archivo_padron is None or archivo_plan is None:
+    if archivo_compras is None or archivo_plan is None:
         st.error("❌ Faltan archivos obligatorios")
         st.stop()
 
-    padron = cargar_padron_excel(archivo_padron)
+    compras = cargar_compras(archivo_compras)
+    padron = generar_padron(compras)
     plan = leer_plan_cuentas_pdf(archivo_plan)
 
     memoria = None
@@ -250,7 +256,6 @@ if st.button("🚀 Procesar"):
         })
 
     df = pd.DataFrame(resultados)
-
     conflictos = df[df["Conflicto"] == "SI"]
 
     output_path = os.path.join(tempfile.gettempdir(), "imputacion.xlsx")
