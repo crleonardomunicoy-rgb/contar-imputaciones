@@ -28,7 +28,7 @@ def cargar_padron_excel(file):
     try:
         df = pd.read_excel(file, sheet_name="padron_proveedores")
     except:
-        st.error("❌ El archivo debe tener una hoja llamada 'padron_proveedores'")
+        st.error("❌ El archivo debe tener una hoja llamada 'Padron_Proveedores'")
         st.stop()
 
     columnas_esperadas = [
