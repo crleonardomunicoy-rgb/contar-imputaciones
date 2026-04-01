@@ -26,9 +26,9 @@ def limpiar_cuit(valor):
 
 def cargar_padron_excel(file):
     try:
-        df = pd.read_excel(file, sheet_name="Padron")
+        df = pd.read_excel(file, sheet_name="padron_proveedores")
     except:
-        st.error("❌ El archivo debe tener una hoja llamada 'Padron'")
+        st.error("❌ El archivo debe tener una hoja llamada 'padron_proveedores'")
         st.stop()
 
     columnas_esperadas = [
@@ -43,6 +43,10 @@ def cargar_padron_excel(file):
     if faltantes:
         st.error(f"❌ Faltan columnas obligatorias: {faltantes}")
         st.stop()
+
+    st.success("✅ Formato de padrón correcto")
+
+    df["CUIT"] = df["CUIT"].apply(limpiar_cuit)
 
     return df
 
@@ -165,20 +169,26 @@ def sugerir(proveedor, plan):
 # INTERFAZ
 # ---------------------------
 
-actividad = st.text_area("Actividad de la empresa")
+st.subheader("1️⃣ Actividad de la empresa")
+actividad = st.text_area("Describir actividad")
 
-archivo_padron = st.file_uploader("Subir padrón (Excel)", type=["xlsx"])
-archivo_plan = st.file_uploader("Subir plan de cuentas (PDF)", type=["pdf"])
-archivo_memoria = st.file_uploader("Subir memoria (opcional)", type=["xlsx"])
+st.subheader("2️⃣ Subir padrón de proveedores")
+archivo_padron = st.file_uploader("Subir Excel", type=["xlsx"])
+
+st.subheader("3️⃣ Subir plan de cuentas")
+archivo_plan = st.file_uploader("Subir PDF", type=["pdf"])
+
+st.subheader("4️⃣ Subir memoria (opcional)")
+archivo_memoria = st.file_uploader("Subir memoria", type=["xlsx"])
 
 # ---------------------------
 # PROCESO
 # ---------------------------
 
-if st.button("Procesar"):
+if st.button("🚀 Procesar"):
 
     if archivo_padron is None or archivo_plan is None:
-        st.error("Faltan archivos obligatorios")
+        st.error("❌ Faltan archivos obligatorios")
         st.stop()
 
     padron = cargar_padron_excel(archivo_padron)
@@ -192,7 +202,7 @@ if st.button("Procesar"):
 
     for _, row in padron.iterrows():
 
-        cuit = limpiar_cuit(row["CUIT"])
+        cuit = row["CUIT"]
         proveedor = row["Proveedor"]
 
         cod_mem = ""
@@ -234,8 +244,8 @@ if st.button("Procesar"):
             "Cuenta_Sugerida_3": cta3,
             "Origen": origen,
             "Conflicto": conflicto,
-            "Cuenta_Final": "",
             "Codigo_Cuenta_Final": "",
+            "Cuenta_Final": "",
             "Validado": "NO"
         })
 
