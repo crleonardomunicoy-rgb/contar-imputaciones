@@ -26,7 +26,7 @@ def limpiar_cuit(valor):
 
 def cargar_padron_excel(file):
     try:
-        df = pd.read_excel(file, sheet_name="padron_proveedores")
+        df = pd.read_excel(file, sheet_name="Padron_Proveedores")
     except:
         st.error("❌ El archivo debe tener una hoja llamada 'Padron_Proveedores'")
         st.stop()
@@ -172,7 +172,7 @@ def sugerir(proveedor, plan):
 st.subheader("1️⃣ Actividad de la empresa")
 actividad = st.text_area("Describir actividad")
 
-st.subheader("2️⃣ Subir padrón de proveedores")
+st.subheader("2️⃣ Subir Padrón de Proveedores")
 archivo_padron = st.file_uploader("Subir Excel", type=["xlsx"])
 
 st.subheader("3️⃣ Subir plan de cuentas")
