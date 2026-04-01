@@ -5,11 +5,11 @@ import re
 import tempfile
 import os
 
-st.set_page_config(page_title="Contar - Imputación de Compras", layout="wide")
+st.set_page_config(page_title="Contar - Imputación desde Compras", layout="wide")
 
 st.title("🧠 Contar - Imputación desde Compras Unificadas")
 
-st.info("⚠️ Subir archivo de compras generado por el sistema Contar")
+st.info("⚠️ Subir archivo de compras generado por AFIP / sistema Contar")
 
 # ---------------------------
 # FUNCIONES
@@ -20,41 +20,55 @@ def limpiar_cuit(valor):
         return ""
     return re.sub(r"\D", "", str(valor))
 
-# ---------------------------
-# LEER COMPRAS DESDE EXCEL
-# ---------------------------
-
 def normalizar_columnas(df):
     df.columns = df.columns.str.strip()
     df.columns = df.columns.str.replace("\n", " ")
     df.columns = df.columns.str.replace("  ", " ")
     return df
 
-def buscar_columna(df, posibles):
-    for col in df.columns:
-        col_clean = col.lower()
-        for p in posibles:
-            if p in col_clean:
-                return col
-    return None
+# ---------------------------
+# CARGA DE COMPRAS (ROBUSTA)
+# ---------------------------
 
 def cargar_compras(file):
     df = pd.read_excel(file)
-
     df = normalizar_columnas(df)
 
-    col_cuit = buscar_columna(df, ["cuit", "doc", "vendedor"])
-    col_proveedor = buscar_columna(df, ["denominacion", "nombre", "razon"])
-    col_importe = buscar_columna(df, ["importe total", "total"])
+    columnas = df.columns.tolist()
+
+    col_cuit = "Nro. Doc. Vendedor" if "Nro. Doc. Vendedor" in columnas else None
+    col_proveedor = "Denominación Vendedor" if "Denominación Vendedor" in columnas else None
+    col_importe = "Importe Total" if "Importe Total" in columnas else None
+
+    # fallback inteligente
+    if not col_proveedor:
+        for col in columnas:
+            if "denominacion" in col.lower() or "nombre" in col.lower():
+                col_proveedor = col
+                break
+
+    if not col_cuit:
+        for col in columnas:
+            if "doc" in col.lower() and "vendedor" in col.lower():
+                col_cuit = col
+                break
+
+    if not col_importe:
+        for col in columnas:
+            if "importe total" in col.lower():
+                col_importe = col
+                break
 
     if not col_cuit or not col_proveedor or not col_importe:
         st.error("❌ No se pudieron identificar las columnas necesarias")
-        st.write("Columnas detectadas:", list(df.columns))
+        st.write("Columnas detectadas:", columnas)
         st.stop()
 
     df["CUIT"] = df[col_cuit].apply(limpiar_cuit)
     df["Proveedor"] = df[col_proveedor]
     df["Importe Total"] = df[col_importe]
+
+    st.success("✅ Columnas identificadas correctamente")
 
     return df
 
@@ -66,12 +80,12 @@ def generar_padron(df):
     padron = (
         df.groupby("CUIT")
         .agg({
-            "Denominación del Vendedor": "last",
+            "Proveedor": "last",
             "Importe Total": "sum",
             "CUIT": "count"
         })
         .rename(columns={
-            "Denominación del Vendedor": "Proveedor",
+            "Proveedor": "Proveedor",
             "Importe Total": "Importe Total",
             "CUIT": "Cantidad Comprobantes"
         })
@@ -81,7 +95,7 @@ def generar_padron(df):
     return padron
 
 # ---------------------------
-# PLAN DE CUENTAS PDF
+# PLAN DE CUENTAS
 # ---------------------------
 
 def leer_plan_cuentas_pdf(file):
@@ -155,7 +169,7 @@ def buscar_memoria(cuit, memoria):
     return fila["Codigo_Cuenta_Final"], fila["Cuenta_Final"]
 
 # ---------------------------
-# SUGERENCIAS POR REGLAS
+# SUGERENCIAS
 # ---------------------------
 
 def sugerir(proveedor, plan):
@@ -165,21 +179,26 @@ def sugerir(proveedor, plan):
 
     for _, row in plan.iterrows():
         codigo = row["Codigo"]
-        cuenta = row["Cuenta"].upper()
+        cuenta = row["Cuenta"]
+        cuenta_upper = cuenta.upper()
 
         score = 0
 
         if "YPF" in nombre or "SHELL" in nombre:
-            if "COMBUST" in cuenta:
+            if "COMBUST" in cuenta_upper:
                 score += 10
 
-        if "TRANSP" in nombre:
-            if "FLETE" in cuenta or "TRANSP" in cuenta:
+        if "TRANSP" in nombre or "FLETE" in nombre:
+            if "FLETE" in cuenta_upper:
                 score += 10
 
-        if "ESTUDIO" in nombre:
-            if "HONOR" in cuenta:
+        if "ESTUDIO" in nombre or "CONSULT" in nombre:
+            if "HONOR" in cuenta_upper:
                 score += 10
+
+        if "FERRE" in nombre or "CORRALON" in nombre:
+            if "MATERIA" in cuenta_upper or "INSUMO" in cuenta_upper:
+                score += 8
 
         if score > 0:
             sugerencias.append((codigo, cuenta, score))
@@ -193,13 +212,13 @@ def sugerir(proveedor, plan):
 # ---------------------------
 
 st.subheader("1️⃣ Subir archivo de compras")
-archivo_compras = st.file_uploader("Subir Excel de compras", type=["xlsx"])
+archivo_compras = st.file_uploader("Excel compras", type=["xlsx"])
 
 st.subheader("2️⃣ Subir plan de cuentas")
-archivo_plan = st.file_uploader("Subir PDF", type=["pdf"])
+archivo_plan = st.file_uploader("PDF plan de cuentas", type=["pdf"])
 
 st.subheader("3️⃣ Subir memoria (opcional)")
-archivo_memoria = st.file_uploader("Subir memoria", type=["xlsx"])
+archivo_memoria = st.file_uploader("Excel memoria", type=["xlsx"])
 
 # ---------------------------
 # PROCESO
@@ -232,7 +251,6 @@ if st.button("🚀 Procesar"):
         conflicto = "NO"
 
         memoria_match = buscar_memoria(cuit, memoria)
-
         sugerencias = sugerir(proveedor, plan)
 
         cod1 = cod2 = cod3 = ""
