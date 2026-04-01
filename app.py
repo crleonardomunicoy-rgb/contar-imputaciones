@@ -24,22 +24,37 @@ def limpiar_cuit(valor):
 # LEER COMPRAS DESDE EXCEL
 # ---------------------------
 
+def normalizar_columnas(df):
+    df.columns = df.columns.str.strip()
+    df.columns = df.columns.str.replace("\n", " ")
+    df.columns = df.columns.str.replace("  ", " ")
+    return df
+
+def buscar_columna(df, posibles):
+    for col in df.columns:
+        col_clean = col.lower()
+        for p in posibles:
+            if p in col_clean:
+                return col
+    return None
+
 def cargar_compras(file):
     df = pd.read_excel(file)
 
-    columnas_necesarias = [
-        "Nro. Doc. Vendedor",
-        "Denominación del Vendedor",
-        "Importe Total"
-    ]
+    df = normalizar_columnas(df)
 
-    faltantes = [c for c in columnas_necesarias if c not in df.columns]
+    col_cuit = buscar_columna(df, ["cuit", "doc", "vendedor"])
+    col_proveedor = buscar_columna(df, ["denominacion", "nombre", "razon"])
+    col_importe = buscar_columna(df, ["importe total", "total"])
 
-    if faltantes:
-        st.error(f"❌ El archivo no tiene columnas necesarias: {faltantes}")
+    if not col_cuit or not col_proveedor or not col_importe:
+        st.error("❌ No se pudieron identificar las columnas necesarias")
+        st.write("Columnas detectadas:", list(df.columns))
         st.stop()
 
-    df["CUIT"] = df["Nro. Doc. Vendedor"].apply(limpiar_cuit)
+    df["CUIT"] = df[col_cuit].apply(limpiar_cuit)
+    df["Proveedor"] = df[col_proveedor]
+    df["Importe Total"] = df[col_importe]
 
     return df
 
