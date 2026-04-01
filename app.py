@@ -1,109 +1,53 @@
 import streamlit as st
 import pandas as pd
-import zipfile
-import io
-import os
-import re
 import pdfplumber
+import re
+import tempfile
+import os
 
-st.set_page_config(page_title="Contar - Compras + Padrón + Plan de Cuentas", layout="wide")
+st.set_page_config(page_title="Contar - Imputación de Proveedores", layout="wide")
 
-st.title("📊 Contar 2.0 - Procesamiento de Compras + Padrón + Plan de Cuentas")
+st.title("🧠 Contar - Imputación de Proveedores")
+
+st.info("⚠️ Subir únicamente archivos generados por el sistema Contar - Compras")
 
 # ---------------------------
 # FUNCIONES
 # ---------------------------
 
-def limpiar_cuit(cuit):
-    if pd.isna(cuit):
+def limpiar_cuit(valor):
+    if pd.isna(valor):
         return ""
-    return re.sub(r"\D", "", str(cuit))
+    return re.sub(r"\D", "", str(valor))
 
-def formatear_fecha(fecha):
+# ---------------------------
+# CARGA ESTRICTA DE PADRÓN
+# ---------------------------
+
+def cargar_padron_excel(file):
     try:
-        return pd.to_datetime(fecha).strftime("%d/%m/%Y")
+        df = pd.read_excel(file, sheet_name="Padron")
     except:
-        return "-"
+        st.error("❌ El archivo debe tener una hoja llamada 'Padron'")
+        st.stop()
 
-def limpiar_numero(valor):
-    try:
-        return float(valor)
-    except:
-        return "-"
-
-# ---------------------------
-# LECTURA DE COMPRAS DESDE ZIP
-# ---------------------------
-
-def procesar_zip(zip_file):
-    dfs = []
-
-    with zipfile.ZipFile(zip_file) as z:
-        for file in z.namelist():
-            if "comprobantes_compras" in file and file.endswith(".csv"):
-                with z.open(file) as f:
-                    df = pd.read_csv(f, sep=None, engine='python')
-
-                    # LIMPIEZA BASE
-                    df.columns = [c.strip() for c in df.columns]
-
-                    # FECHA
-                    if "Fecha de Emisión" in df.columns:
-                        df["Fecha de Emisión"] = df["Fecha de Emisión"].apply(formatear_fecha)
-
-                    # NUMÉRICOS
-                    columnas_numericas = [
-                        "Tipo de Comprobante",
-                        "Punto de Venta",
-                        "Número de Comprobante",
-                        "Tipo Doc. Vendedor",
-                        "Nro. Doc. Vendedor",
-                        "Importe Total",
-                        "Tipo de Cambio"
-                    ]
-
-                    for col in columnas_numericas:
-                        if col in df.columns:
-                            df[col] = pd.to_numeric(df[col], errors='coerce')
-
-                    # LIMPIAR CEROS
-                    df = df.fillna("-")
-
-                    dfs.append(df)
-
-    if dfs:
-        return pd.concat(dfs, ignore_index=True)
-    else:
-        return pd.DataFrame()
-
-# ---------------------------
-# PADRÓN DE PROVEEDORES
-# ---------------------------
-
-def generar_padron(df):
-    df["CUIT_Limpio"] = df["Nro. Doc. Vendedor"].apply(limpiar_cuit)
-
-    padron = (
-        df.groupby("CUIT_Limpio")
-        .agg({
-            "Denominación del Vendedor": "last",
-            "Importe Total": "sum",
-            "Nro. Doc. Vendedor": "count"
-        })
-        .reset_index()
-    )
-
-    padron.columns = [
+    columnas_esperadas = [
         "CUIT",
         "Proveedor",
         "Importe Total",
         "Cantidad Comprobantes"
     ]
 
-    return padron
+    faltantes = [c for c in columnas_esperadas if c not in df.columns]
+
+    if faltantes:
+        st.error(f"❌ Faltan columnas obligatorias: {faltantes}")
+        st.stop()
+
+    return df
 
 # ---------------------------
-# PLAN DE CUENTAS DESDE PDF
+# PLAN DE CUENTAS PDF
 # ---------------------------
 
 def leer_plan_cuentas_pdf(file):
@@ -128,74 +72,184 @@ def leer_plan_cuentas_pdf(file):
         match = re.match(r"^([\d\.\-]+)\s+(.*)$", linea)
 
         if match:
-            codigo = match.group(1).strip()
-            nombre = match.group(2).strip()
+            cuentas.append({
+                "Codigo": match.group(1),
+                "Cuenta": match.group(2)
+            })
 
-            if len(nombre) > 2:
-                cuentas.append({
-                    "Codigo": codigo,
-                    "Cuenta": nombre
-                })
-
-    df = pd.DataFrame(cuentas)
-    df = df.drop_duplicates()
+    df = pd.DataFrame(cuentas).drop_duplicates()
 
     return df
+
+# ---------------------------
+# MEMORIA
+# ---------------------------
+
+def cargar_memoria(file):
+    df = pd.read_excel(file)
+
+    columnas_esperadas = [
+        "CUIT",
+        "Proveedor",
+        "Codigo_Cuenta_Final",
+        "Cuenta_Final"
+    ]
+
+    faltantes = [c for c in columnas_esperadas if c not in df.columns]
+
+    if faltantes:
+        st.error(f"❌ Memoria incorrecta. Faltan columnas: {faltantes}")
+        st.stop()
+
+    df["CUIT"] = df["CUIT"].apply(limpiar_cuit)
+
+    return df
+
+# ---------------------------
+# BUSCAR MEMORIA
+# ---------------------------
+
+def buscar_memoria(cuit, memoria):
+    if memoria is None:
+        return None
+
+    match = memoria[memoria["CUIT"] == cuit]
+
+    if match.empty:
+        return None
+
+    fila = match.iloc[-1]
+
+    return fila["Codigo_Cuenta_Final"], fila["Cuenta_Final"]
+
+# ---------------------------
+# SUGERENCIAS POR REGLAS
+# ---------------------------
+
+def sugerir(proveedor, plan):
+    nombre = proveedor.upper()
+
+    sugerencias = []
+
+    for _, row in plan.iterrows():
+        codigo = row["Codigo"]
+        cuenta = row["Cuenta"]
+        cuenta_upper = cuenta.upper()
+
+        score = 0
+
+        if "YPF" in nombre or "SHELL" in nombre:
+            if "COMBUST" in cuenta_upper:
+                score += 10
+
+        if "TRANSP" in nombre or "FLETE" in nombre:
+            if "FLETE" in cuenta_upper or "TRANSP" in cuenta_upper:
+                score += 10
+
+        if "ESTUDIO" in nombre or "CONSULT" in nombre:
+            if "HONOR" in cuenta_upper:
+                score += 10
+
+        if "FERRE" in nombre or "CORRALON" in nombre:
+            if "MATERIA" in cuenta_upper or "INSUMO" in cuenta_upper:
+                score += 8
+
+        if score > 0:
+            sugerencias.append((codigo, cuenta, score))
+
+    sugerencias = sorted(sugerencias, key=lambda x: x[2], reverse=True)
+
+    return sugerencias[:3]
 
 # ---------------------------
 # INTERFAZ
 # ---------------------------
 
-st.header("1️⃣ Subir ZIP de Compras")
-zip_file = st.file_uploader("Subir archivo ZIP de AFIP/ARCA", type=["zip"])
+actividad = st.text_area("Actividad de la empresa")
 
-st.header("2️⃣ Subir Plan de Cuentas (PDF)")
-plan_pdf = st.file_uploader("Subir PDF del Plan de Cuentas", type=["pdf"])
+archivo_padron = st.file_uploader("Subir padrón (Excel)", type=["xlsx"])
+archivo_plan = st.file_uploader("Subir plan de cuentas (PDF)", type=["pdf"])
+archivo_memoria = st.file_uploader("Subir memoria (opcional)", type=["xlsx"])
 
 # ---------------------------
-# PROCESAMIENTO
+# PROCESO
 # ---------------------------
 
-if zip_file:
+if st.button("Procesar"):
 
-    df_compras = procesar_zip(zip_file)
+    if archivo_padron is None or archivo_plan is None:
+        st.error("Faltan archivos obligatorios")
+        st.stop()
 
-    if not df_compras.empty:
+    padron = cargar_padron_excel(archivo_padron)
+    plan = leer_plan_cuentas_pdf(archivo_plan)
 
-        st.success("✅ Compras procesadas")
+    memoria = None
+    if archivo_memoria:
+        memoria = cargar_memoria(archivo_memoria)
 
-        st.subheader("📋 Vista Compras")
-        st.dataframe(df_compras.head(50))
+    resultados = []
 
-        # PADRÓN
-        padron = generar_padron(df_compras)
+    for _, row in padron.iterrows():
 
-        st.subheader("📇 Padrón de Proveedores")
-        st.dataframe(padron)
+        cuit = limpiar_cuit(row["CUIT"])
+        proveedor = row["Proveedor"]
 
-        # PLAN DE CUENTAS
-        if plan_pdf:
-            df_plan = leer_plan_cuentas_pdf(plan_pdf)
+        cod_mem = ""
+        cuenta_mem = ""
+        origen = "REGLAS"
+        conflicto = "NO"
 
-            st.subheader("📚 Plan de Cuentas Detectado")
-            st.dataframe(df_plan)
+        memoria_match = buscar_memoria(cuit, memoria)
 
-        # EXPORTAR
-        output = io.BytesIO()
+        sugerencias = sugerir(proveedor, plan)
 
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_compras.to_excel(writer, sheet_name="Compras", index=False)
-            padron.to_excel(writer, sheet_name="Padron", index=False)
+        cod1 = cod2 = cod3 = ""
+        cta1 = cta2 = cta3 = ""
 
-            if plan_pdf:
-                df_plan.to_excel(writer, sheet_name="Plan_Cuentas", index=False)
+        if len(sugerencias) > 0:
+            cod1, cta1, _ = sugerencias[0]
+        if len(sugerencias) > 1:
+            cod2, cta2, _ = sugerencias[1]
+        if len(sugerencias) > 2:
+            cod3, cta3, _ = sugerencias[2]
 
-        st.download_button(
-            label="📥 Descargar Excel Completo",
-            data=output.getvalue(),
-            file_name="compras_padron_plan.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        if memoria_match:
+            cod_mem, cuenta_mem = memoria_match
+            origen = "MEMORIA"
 
-    else:
-        st.warning("No se encontraron datos de compras en el ZIP")
+            if cod1 != "" and cod_mem != cod1:
+                conflicto = "SI"
+
+        resultados.append({
+            "CUIT": cuit,
+            "Proveedor": proveedor,
+            "Codigo_Memoria": cod_mem,
+            "Cuenta_Memoria": cuenta_mem,
+            "Codigo_Sugerida_1": cod1,
+            "Cuenta_Sugerida_1": cta1,
+            "Codigo_Sugerida_2": cod2,
+            "Cuenta_Sugerida_2": cta2,
+            "Codigo_Sugerida_3": cod3,
+            "Cuenta_Sugerida_3": cta3,
+            "Origen": origen,
+            "Conflicto": conflicto,
+            "Cuenta_Final": "",
+            "Codigo_Cuenta_Final": "",
+            "Validado": "NO"
+        })
+
+    df = pd.DataFrame(resultados)
+
+    conflictos = df[df["Conflicto"] == "SI"]
+
+    output_path = os.path.join(tempfile.gettempdir(), "imputacion.xlsx")
+
+    with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
+        df.to_excel(writer, sheet_name="Padron_Imputado", index=False)
+        conflictos.to_excel(writer, sheet_name="Conflictos", index=False)
+
+    with open(output_path, "rb") as f:
+        st.download_button("📥 Descargar Resultado", f, "imputacion.xlsx")
+
+    st.success("✅ Proceso terminado")
